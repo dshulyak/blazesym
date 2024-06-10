@@ -74,7 +74,6 @@ use super::Sym;
 use super::Symbolize;
 use super::Symbolized;
 
-
 #[cfg(feature = "apk")]
 fn create_apk_elf_path(apk: &Path, elf: &Path) -> Result<PathBuf> {
     let mut extension = apk
@@ -90,13 +89,12 @@ fn create_apk_elf_path(apk: &Path, elf: &Path) -> Result<PathBuf> {
         return Err(Error::with_invalid_data(format!(
             "path {} is not valid",
             apk.display()
-        )))
+        )));
     }
 
     let path = apk.join(elf);
     Ok(path)
 }
-
 
 /// Demangle a symbol name using the demangling scheme for the given language.
 #[cfg(feature = "demangle")]
@@ -127,7 +125,6 @@ fn maybe_demangle(name: Cow<'_, str>, _language: SrcLang) -> Cow<'_, str> {
     name
 }
 
-
 /// Information about a member inside an APK.
 ///
 /// This type is used in conjunction with the APK "dispatcher" infrastructure;
@@ -146,7 +143,6 @@ pub struct ApkMemberInfo<'dat> {
     pub _non_exhaustive: (),
 }
 
-
 /// The signature of a dispatcher function for APK symbolization.
 ///
 /// This type is used in conjunction with the APK "dispatcher" infrastructure;
@@ -162,7 +158,6 @@ pub trait ApkDispatch: Fn(ApkMemberInfo<'_>) -> Result<Option<Box<dyn Resolve>>>
 #[cfg(feature = "apk")]
 impl<F> ApkDispatch for F where F: Fn(ApkMemberInfo<'_>) -> Result<Option<Box<dyn Resolve>>> {}
 
-
 /// The signature of a dispatcher function for process symbolization.
 ///
 /// This type is used in conjunction with the process "dispatcher"
@@ -174,7 +169,6 @@ impl<F> ApkDispatch for F where F: Fn(ApkMemberInfo<'_>) -> Result<Option<Box<dy
 pub trait ProcessDispatch: Fn(ProcessMemberInfo<'_>) -> Result<Option<Box<dyn Resolve>>> {}
 
 impl<F> ProcessDispatch for F where F: Fn(ProcessMemberInfo<'_>) -> Result<Option<Box<dyn Resolve>>> {}
-
 
 #[cfg(feature = "apk")]
 fn default_apk_dispatcher(
@@ -190,7 +184,6 @@ fn default_apk_dispatcher(
     Ok(resolver)
 }
 
-
 /// Information about an address space member of a process.
 #[derive(Clone, Debug)]
 pub struct ProcessMemberInfo<'dat> {
@@ -203,7 +196,6 @@ pub struct ProcessMemberInfo<'dat> {
     #[doc(hidden)]
     pub _non_exhaustive: (),
 }
-
 
 /// A builder for configurable construction of [`Symbolizer`] objects.
 ///
@@ -362,6 +354,7 @@ impl Builder {
             ksym_cache: FileCache::builder().enable_auto_reload(auto_reload).build(),
             perf_map_cache: FileCache::builder().enable_auto_reload(auto_reload).build(),
             process_cache: InsertMap::new(),
+            maps_cache: FileCache::builder().enable_auto_reload(auto_reload).build(),
             find_sym_opts,
             demangle,
             #[cfg(feature = "dwarf")]
@@ -392,7 +385,6 @@ impl Default for Builder {
     }
 }
 
-
 /// An enumeration helping us to differentiate between cached and uncached
 /// symbol resolvers.
 ///
@@ -411,7 +403,6 @@ enum Resolver<'tmp, 'slf> {
     Uncached(&'tmp (dyn Symbolize + 'tmp)),
     Cached(&'slf dyn Symbolize),
 }
-
 
 /// Symbolizer provides an interface to symbolize addresses.
 ///
@@ -441,6 +432,7 @@ pub struct Symbolizer {
     perf_map_cache: FileCache<PerfMap>,
     process_cache: InsertMap<PathName, Option<Box<dyn Resolve>>>,
     find_sym_opts: FindSymOpts,
+    maps_cache: FileCache<Vec<Result<MapsEntry>>>,
     demangle: bool,
     #[cfg(feature = "dwarf")]
     debug_dirs: Vec<PathBuf>,
@@ -619,9 +611,9 @@ impl Symbolizer {
 
                 let elf_off = file_off - apk_entry.data_offset;
                 if let Some(addr) = resolver.file_offset_to_virt_offset(elf_off)? {
-                    return Ok(Some((resolver.deref(), addr)))
+                    return Ok(Some((resolver.deref(), addr)));
                 }
-                break
+                break;
             }
         }
 
@@ -825,7 +817,7 @@ impl Symbolizer {
                             }
                             None => self.handle_unknown_addr(addr, Reason::InvalidFileOffset),
                         };
-                        return result
+                        return result;
                     }
 
                     // If there is no process dispatcher installed or it did
@@ -863,7 +855,36 @@ impl Symbolizer {
             }
         }
 
-        let entries = maps::parse(pid)?;
+        let path = format!("/proc/{pid}/maps");
+        let (file, cell) = self.maps_cache.entry(&Path::new(&path))?;
+        let entries = cell
+            .get_or_try_init(|| {
+                let rst = maps::parse_file(file, pid).collect::<Vec<_>>();
+                for entry in rst.iter() {
+                    if let Some(entry_path) = entry
+                        .as_ref()
+                        .ok()
+                        .and_then(|entry| entry.path_name.as_ref())
+                    {
+                        if let PathName::Path(entry_path) = entry_path {
+                            let path = if map_files {
+                                &entry_path.maps_file
+                            } else {
+                                &entry_path.symbolic_path
+                            };
+                            let _ = self
+                                .elf_cache
+                                .elf_resolver(path, self.maybe_debug_dirs(debug_syms));
+                        }
+                    }
+                }
+                Result::<_, Error>::Ok(rst)
+            })?
+            .iter()
+            .map(|e| match e {
+                Ok(entry) => Ok(entry),
+                Err(err) => Err(Error::with_unsupported(err)),
+            });
         let mut handler = SymbolizeHandler {
             symbolizer: self,
             pid,
@@ -1368,7 +1389,6 @@ impl Default for Symbolizer {
     }
 }
 
-
 #[cfg(test)]
 #[allow(clippy::missing_transmute_annotations)]
 mod tests {
@@ -1379,7 +1399,6 @@ mod tests {
     use crate::test_helper::find_the_answer_fn_in_zip;
 
     use test_log::test;
-
 
     /// Exercise the `Debug` representation of various types.
     #[test]
